@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright (c) 2013, Vispy Development Team.
+# Copyright (c) 2015, Vispy Development Team.
 # Distributed under the (new) BSD License. See LICENSE.txt for more info.
 
 """ Define constants for keys.
@@ -14,46 +14,33 @@ intended as a compatibility measure.
 
 """
 
-from __future__ import print_function, division, absolute_import
-
-import sys
-from vispy.util.six import string_types
+from ..ext.six import string_types
 
 
-# class Key(str):
-#     """ A string that can only be compared to another string. 
-#     More strict that a simple string to avoid bugs trying to compare to int.
-#     """
-#     def __new__(cls, s, *alternatives):
-#         if not isinstance(s, string_types):
-#             raise ValueError('KeyConsant must be a string')
-#         s = str.__new__(cls, s)
-#         s._alternatives = alternatives
-#         return s
-#     def __eq__(self, other):
-#         if not isinstance(other, string_types):
-#             raise ValueError('Key constants can only be compared to strings.')
-#         return XX.__eq__(self, other) or other in self._alternatives
+class Key(object):
+    """ Represent the identity of a certain key.
 
-class Key:
-    """ A Key object represents the identity of a certain key. It
-    represents one or more names that the key in question is known by.
-    
+    This represents one or more names that the key in question is known by.
+
     A Key object can be compared to one of its string names (case
     insensitive), to the integer ordinal of the key (only for keys that
     represent characters), and to another Key instance.
     """
+
     def __init__(self, *names):
         self._names = names
         self._names_upper = tuple([v.upper() for v in names])
-    
+
     @property
     def name(self):
-        """ The name of the key.
+        """ The primary name of the key.
         """
         return self._names[0]
     
-    def __repr__(self):        
+    def __hash__(self):
+        return self._names[0].__hash__()
+    
+    def __repr__(self):
         return "<Key %s>" % ', '.join([repr(v) for v in self._names])
     
     def __eq__(self, other):
@@ -62,9 +49,11 @@ class Key:
         elif isinstance(other, Key):
             return self._names[0] == other
         elif isinstance(other, int):
-            return other in [ord(v) for v in self._names_upper if len(v)==1]
+            return other in [ord(v) for v in self._names_upper if len(v) == 1]
+        elif other is None:
+            return False
         else:
-            raise ValueError('Key constants can only be compared to str, int and Key.')
+            raise ValueError('Key can only be compared to str, int and Key.')
 
 
 SHIFT = Key('Shift')

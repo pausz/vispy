@@ -1,106 +1,32 @@
 # -*- coding: utf-8 -*-
-# Copyright (c) 2013, Vispy Development Team.
+# Copyright (c) 2015, Vispy Development Team.
 # Distributed under the (new) BSD License. See LICENSE.txt for more info.
 
 """
-Vispy is a collaborative project that has the goal to allow more sharing
-of code between visualization projects based on OpenGL. It does this
-by providing powerful interfaces to OpenGL, at different levels of
-abstraction and generality.
 
-Vispy consists of the following modules:
-  * vispy.gloo: Object oriented GL API
-  * vispy.gloo.gl: Low level OpenGL API
-  * vispy.app: for creating windows, timers and mainloops for various backends
-  * vispy.util: various utilities
-  * vispy.utils.dataio: read and write data
-  * vispy.visuals: Higher level visualization objects (work in progress)
-  * ... more to come
+=====
+Vispy
+=====
 
-Vispy comes with a powerful event system and a simple application
-framework that works on multiple backends. This allows easy creation
-of figures, and enables integrating visualizations in a GUI application.
+Vispy is a **high-performance interactive 2D/3D data visualization
+library**. Vispy leverages the computational power of modern **Graphics
+Processing Units (GPUs)** through the **OpenGL** library to display very
+large datasets.
 
-For more information see http://vispy.org.
+For more information, see http://vispy.org.
 
 """
 
-from __future__ import print_function, division, absolute_import
+from __future__ import division
+
+__all__ = ['use', 'sys_info', 'set_log_level', 'test']
 
 # Definition of the version number
-__version__ = '0.2.1'
- 
+version_info = 0, 5, 0, 'dev0'  # major, minor, patch, extra
 
-from vispy.util.event import EmitterGroup, EventEmitter, Event
-from vispy.util import keys, dataio
+# Nice string for the version (mimic how IPython composes its version str)
+__version__ = '-'.join(map(str, version_info)).replace('-', '.').strip('-')
 
-
-class ConfigEvent(Event):
-    """ Event indicating a configuration change. 
-    
-    This class has a 'changes' attribute which is a dict of all name:value 
-    pairs that have changed in the configuration.
-    """
-    def __init__(self, changes):
-        Event.__init__(self, type='config_change')
-        self.changes = changes
-        
-        
-class Config(object):
-    """ Container for global settings used application-wide in vispy.
-    
-    Events:
-    -------
-    Config.events.changed - Emits ConfigEvent whenever the configuration changes.
-    """
-    def __init__(self):
-        self.events = EmitterGroup(source=self)
-        self.events['changed'] = EventEmitter(event_class=ConfigEvent, source=self)
-        self._config = {}
-    
-    def __getitem__(self, item):
-        return self._config[item]
-    
-    def __setitem__(self, item, val):
-        self._config[item] = val
-        # inform any listeners that a configuration option has changed
-        self.events.changed(changes={item:val})
-        
-    def update(self, **kwds):
-        self._config.update(kwds)
-        self.events.changed(changes=kwds)
-
-    def __repr__(self):
-        return repr(self._config)
-
-config = Config()
-config.update(
-    default_backend='qt',
-    qt_lib= 'any',  # options are 'pyqt', 'pyside', or 'any'
-    show_warnings=False,
-    gl_debug=False,
-)
-
-
-def parse_command_line_arguments():
-    """ Transform vispy specific command line args to vispy config.
-    Put into a function so that any variables dont leak in the vispy namespace.
-    """
-    import getopt, sys
-    # Get command line args for vispy
-    argnames = ['vispy-backend', 'vispy-gl-debug']
-    try:
-        opts, args = getopt.getopt(sys.argv[1:], '', argnames)
-    except getopt.GetoptError:
-        opts = []
-    # Use them to set the config values
-    for o, a in opts:
-        if o.startswith('--vispy'):
-            if o == '--vispy-backend':
-                config['default_backend'] = a
-                print('backend', a)
-            elif o == '--vispy-gl-debug':
-                config['gl_debug'] = True
-            else:
-                print("Unsupported vispy flag: %s" % o)
-parse_command_line_arguments()
+from .util import config, set_log_level, keys, sys_info  # noqa
+from .util.wrappers import use  # noqa
+from .testing import test  # noqa

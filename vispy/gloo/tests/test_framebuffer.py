@@ -1,206 +1,177 @@
-# -----------------------------------------------------------------------------
-# VisPy - Copyright (c) 2013, Vispy Development Team
-# All rights reserved.
-# -----------------------------------------------------------------------------
-import unittest
-import numpy as np
-from vispy.gloo import gl
+# -*- coding: utf-8 -*-
 
-from vispy.gloo.framebuffer import RenderBuffer, FrameBuffer
-from vispy.gloo.texture import Texture2D
+from vispy.testing import run_tests_if_main, assert_raises
+
+from vispy import gloo
+from vispy.gloo import FrameBuffer, RenderBuffer
 
 
-class RenderBufferTest(unittest.TestCase):
+def test_renderbuffer():
     
-    def test_init(self):
-        # Init without args
-        buffer = RenderBuffer()
-        self.assertEqual(buffer._handle, 0)
-        self.assertEqual(buffer._need_update, False)
-        self.assertEqual(buffer._valid, False)
+    # Set with no args
+    assert_raises(ValueError, RenderBuffer)
     
-        # Init with shape
-        buffer = RenderBuffer((100, 100))
-        self.assertEqual(buffer._need_update, True)
+    # Set shape only
+    R = RenderBuffer((10, 20))
+    assert R.shape == (10, 20)
+    assert R.format is None
     
+    # Set both shape and format
+    R = RenderBuffer((10, 20), 'color')
+    assert R.shape == (10, 20)
+    assert R.format is 'color'
+    #
+    glir_cmds = R._glir.clear()
+    assert len(glir_cmds) == 2
+    assert glir_cmds[0][0] == 'CREATE'
+    assert glir_cmds[1][0] == 'SIZE'
     
-    def test_setting_shape(self):
-        buffer = RenderBuffer()
-        
-        # No format
-        buffer.set_shape((100,100))
-        self.assertEqual(buffer._shape, (100,100))
-        self.assertEqual(buffer._format, None)
-        #
-        buffer.set_shape((100,100, 1))
-        self.assertEqual(buffer._shape, (100,100))
-        self.assertEqual(buffer._format, None)
-        #
-        buffer.set_shape((100,100, 3))
-        self.assertEqual(buffer._shape, (100,100))
-        self.assertEqual(buffer._format, None)
-        
-        # With invalid shape
-        with self.assertRaises(ValueError):
-            buffer.set_shape(None)
-        with self.assertRaises(ValueError):
-            buffer.set_shape(4)
-        with self.assertRaises(ValueError):
-            buffer.set_shape('test')
-        with self.assertRaises(ValueError):
-            buffer.set_shape((100,))
-        with self.assertRaises(ValueError):
-            buffer.set_shape((100,100,9))
-        with self.assertRaises(ValueError):
-            buffer.set_shape((100,100,3, 3))
-        
-        # With valid format
-        buffer.set_shape((100,100), gl.ext.GL_RGBA8)
-        self.assertEqual(buffer._shape, (100,100))
-        self.assertEqual(buffer._format, gl.ext.GL_RGBA8)
-        #
-        buffer.set_shape((100,100), gl.GL_DEPTH_COMPONENT16)
-        self.assertEqual(buffer._shape, (100,100))
-        self.assertEqual(buffer._format, gl.GL_DEPTH_COMPONENT16)
-        
-        # With invalid format
-        with self.assertRaises(ValueError):
-            buffer.set_shape((100,100), gl.GL_LUMINANCE)
-        with self.assertRaises(ValueError):
-            buffer.set_shape((100,100), gl.GL_RGB)
+    # Orther formats
+    assert RenderBuffer((10, 20), 'depth').format == 'depth'
+    assert RenderBuffer((10, 20), 'stencil').format == 'stencil'
     
+    # Test reset size and format
+    R.resize((9, 9), 'depth')
+    assert R.shape == (9, 9)
+    assert R.format == 'depth'
+    R.resize((8, 8), 'stencil')
+    assert R.shape == (8, 8)
+    assert R.format == 'stencil'
     
-    def test_resetting_shape(self):
-        buffer = RenderBuffer()
-        
-        # Set same shape
-        buffer.set_shape((100,100))
-        self.assertEqual(buffer._need_update, True)
-        buffer._need_update = False
-        #
-        buffer.set_shape((100,100))
-        self.assertEqual(buffer._need_update, False)
-        #
-        buffer.set_shape((100,100, 1))
-        self.assertEqual(buffer._need_update, False)
-        buffer.set_shape((100,100, 3))
-        self.assertEqual(buffer._need_update, False)
-        
-        # Set different shape
-        buffer.set_shape((100,101))
-        self.assertEqual(buffer._need_update, True)
+    # Wrong formats
+    assert_raises(ValueError, R.resize, (9, 9), 'no_format')
+    assert_raises(ValueError, R.resize, (9, 9), [])
+    
+    # Resizable
+    R = RenderBuffer((10, 20), 'color', False)
+    assert_raises(RuntimeError, R.resize, (9, 9), 'color')
+    
+    # Attaching sets the format
+    F = FrameBuffer()
+    #
+    R = RenderBuffer((9, 9))
+    F.color_buffer = R
+    assert F.color_buffer is R
+    assert R.format == 'color'
+    #
+    F.depth_buffer = RenderBuffer((9, 9))
+    assert F.depth_buffer.format == 'depth'
+    #
+    F.stencil_buffer = RenderBuffer((9, 9))
+    assert F.stencil_buffer.format == 'stencil'
 
 
+def test_framebuffer():
+    
+    # Test init with no args
+    F = FrameBuffer()
+    glir_cmds = F._glir.clear()
+    assert len(glir_cmds) == 1
+    glir_cmds[0][0] == 'CREATE'
+    
+    # Activate / deactivate
+    F.activate()
+    glir_cmd = F._glir.clear()[-1]
+    assert glir_cmd[0] == 'FRAMEBUFFER'
+    assert glir_cmd[2] is True
+    #
+    F.deactivate()
+    glir_cmd = F._glir.clear()[-1]
+    assert glir_cmd[0] == 'FRAMEBUFFER'
+    assert glir_cmd[2] is False
+    #
+    with F:
+        pass
+    glir_cmds = F._glir.clear()
+    assert len(glir_cmds) == 2
+    assert glir_cmds[0][0] == 'FRAMEBUFFER'
+    assert glir_cmds[1][0] == 'FRAMEBUFFER'
+    assert glir_cmds[0][2] is True and glir_cmds[1][2] is False
+    
+    # Init with args
+    R = RenderBuffer((3, 3))
+    F = FrameBuffer(R)
+    assert F.color_buffer is R
+    #
+    R2 = RenderBuffer((3, 3))
+    F.color_buffer = R2
+    assert F.color_buffer is R2
+    
+    # Wrong buffers
+    F = FrameBuffer()
+    assert_raises(TypeError, FrameBuffer.color_buffer.fset, F, 'FOO')
+    assert_raises(TypeError, FrameBuffer.color_buffer.fset, F, [])
+    assert_raises(TypeError, FrameBuffer.depth_buffer.fset, F, 'FOO')
+    assert_raises(TypeError, FrameBuffer.stencil_buffer.fset, F, 'FOO')
+    color_buffer = RenderBuffer((9, 9), 'color')
+    assert_raises(ValueError, FrameBuffer.depth_buffer.fset, F, color_buffer)
+    # But None is allowed!
+    F.color_buffer = None
+    
+    # Shape
+    R1 = RenderBuffer((3, 3))
+    R2 = RenderBuffer((3, 3))
+    R3 = RenderBuffer((3, 3))
+    F = FrameBuffer(R1, R2, R3)
+    assert F.shape == R1.shape 
+    assert R1.format == 'color'
+    assert R2.format == 'depth'
+    assert R3.format == 'stencil'
+    # Resize
+    F.resize((10, 10))
+    assert F.shape == (10, 10)
+    assert F.shape == R1.shape 
+    assert F.shape == R2.shape 
+    assert F.shape == R3.shape 
+    assert R1.format == 'color'
+    assert R2.format == 'depth'
+    assert R3.format == 'stencil'
+    # Shape from any buffer
+    F.color_buffer = None
+    assert F.shape == (10, 10)
+    F.depth_buffer = None
+    assert F.shape == (10, 10)
+    F.stencil_buffer = None
+    assert_raises(RuntimeError, FrameBuffer.shape.fget, F)
+    
+    # Also with Texture luminance
+    T = gloo.Texture2D((20, 30))
+    R = RenderBuffer(T.shape)
+    assert T.format == 'luminance'
+    F = FrameBuffer(T, R)
+    assert F.shape == T.shape[:2]
+    assert F.shape == R.shape
+    assert T.format == 'luminance'
+    assert R.format == 'depth'
+    # Resize
+    F.resize((10, 10))
+    assert F.shape == (10, 10)
+    assert T.shape == (10, 10, 1)
+    assert F.shape == R.shape 
+    assert T.format == 'luminance'
+    assert R.format == 'depth'
+    
+    # Also with Texture RGB
+    T = gloo.Texture2D((20, 30, 3))
+    R = RenderBuffer(T.shape)
+    assert T.format == 'rgb'
+    F = FrameBuffer(T, R)
+    assert F.shape == T.shape[:2]
+    assert F.shape == R.shape
+    assert T.format == 'rgb'
+    assert R.format == 'depth'
+    # Resize
+    F.resize((10, 10))
+    assert F.shape == (10, 10)
+    assert T.shape == (10, 10, 3)
+    assert F.shape == R.shape 
+    assert T.format == 'rgb'
+    assert R.format == 'depth'
+    
+    # Wrong shape in resize
+    assert_raises(ValueError, F. resize, (9, 9, 1))
+    assert_raises(ValueError, F. resize, (9,))
+    assert_raises(ValueError, F. resize, 'FOO')
 
-class FrameBufferTest(unittest.TestCase):
-    
-    def test_init(self):
-        # Init without args
-        fbo = FrameBuffer()
-        self.assertEqual(fbo._handle, 0)
-        self.assertEqual(fbo._need_update, False)
-        self.assertEqual(fbo._valid, False)
-        
-        # Init with args
-        fbo = FrameBuffer(RenderBuffer())
-        self.assertEqual(fbo._need_update, True)
-    
-    
-    def test_attaching(self):
-        fbo = FrameBuffer()
-        buffer = RenderBuffer()
-        texture = Texture2D()
-        
-        # Attaching color
-        fbo = FrameBuffer()
-        fbo.attach_color(buffer)
-        self.assertEqual(fbo._attachment_color, buffer)
-        self.assertEqual(len(fbo._pending_attachments), 1)
-        #
-        fbo.attach_color(texture)
-        self.assertEqual(fbo._attachment_color, texture)
-        self.assertEqual(len(fbo._pending_attachments), 2)
-        #
-        fbo.attach_color(None)
-        self.assertEqual(fbo._attachment_color, None)
-        self.assertEqual(len(fbo._pending_attachments), 3)
-        #
-        with self.assertRaises(ValueError):
-            fbo.attach_color("test")
-        with self.assertRaises(ValueError):
-            fbo.attach_color(3)
-        
-        # Attaching depth
-        fbo = FrameBuffer()
-        fbo.attach_depth(buffer)
-        self.assertEqual(fbo._attachment_depth, buffer)
-        self.assertEqual(len(fbo._pending_attachments), 1)
-        #
-        fbo.attach_depth(texture)
-        self.assertEqual(fbo._attachment_depth, texture)
-        self.assertEqual(len(fbo._pending_attachments), 2)
-        #
-        fbo.attach_depth(None)
-        self.assertEqual(fbo._attachment_depth, None)
-        self.assertEqual(len(fbo._pending_attachments), 3)
-        #
-        with self.assertRaises(ValueError):
-            fbo.attach_depth("test")
-        with self.assertRaises(ValueError):
-            fbo.attach_depth(3)
-        
-        # Attach stencil
-        fbo = FrameBuffer()
-        fbo.attach_stencil(buffer)
-        self.assertEqual(fbo._attachment_stencil, buffer)
-        self.assertEqual(len(fbo._pending_attachments), 1)
-        #
-        with self.assertRaises(ValueError):
-            fbo.attach_stencil(texture)
-        #
-        fbo.attach_stencil(None)
-        self.assertEqual(fbo._attachment_stencil, None)
-        self.assertEqual(len(fbo._pending_attachments), 2)
-        #
-        with self.assertRaises(ValueError):
-            fbo.attach_stencil("test")
-        with self.assertRaises(ValueError):
-            fbo.attach_stencil(3)
-    
-    
-    def test_level(self):
-        fbo = FrameBuffer()
-        buffer = RenderBuffer()
-        texture = Texture2D()
-        
-        # Valid level
-        fbo.attach_color(texture, 1)
-        self.assertEqual(fbo._pending_attachments[-1][2], 1)
-        fbo.attach_color(texture, 2)
-        self.assertEqual(fbo._pending_attachments[-1][2], 2)
-        
-        # Invalid level
-        with self.assertRaises(ValueError):
-            fbo.attach_color(texture, 1.1)
-        with self.assertRaises(ValueError):
-            fbo.attach_color(texture, "test")
-    
-    
-    def test_auto_format(self):
-        fbo = FrameBuffer()
-        
-        buffer = RenderBuffer((100,100))
-        fbo.attach_color(buffer)
-        self.assertEqual(buffer._format, gl.GL_RGB565)
-        
-        buffer = RenderBuffer((100,100))
-        fbo.attach_depth(buffer)
-        self.assertEqual(buffer._format, gl.GL_DEPTH_COMPONENT16)
-        
-        buffer = RenderBuffer((100,100))
-        fbo.attach_stencil(buffer)
-        self.assertEqual(buffer._format, gl.GL_STENCIL_INDEX8)
 
-
-if __name__ == "__main__":
-    unittest.main()
+run_tests_if_main()

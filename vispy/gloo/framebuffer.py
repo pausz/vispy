@@ -1,351 +1,254 @@
 # -*- coding: utf-8 -*-
-# Copyright (c) 2013, Vispy Development Team.
+# -----------------------------------------------------------------------------
+# Copyright (c) 2015, Vispy Development Team. All Rights Reserved.
 # Distributed under the (new) BSD License. See LICENSE.txt for more info.
+# -----------------------------------------------------------------------------
 
-""" Definition of Frame Buffer Object class and RenderBuffer class.
+from .globject import GLObject
+from .texture import Texture2D
+from .wrappers import _check_valid, read_pixels
+from .context import get_current_canvas
+from ..ext.six import string_types
 
-"""
-
-from __future__ import print_function, division, absolute_import
-
-import sys
-import numpy as np
-
-from . import gl
-from . import GLObject, ext_available, convert_to_enum
-from . import Texture2D
-
-# todo: check and test all _delete methods
-
-# todo: we need a way to keep track of who uses a RenderBuffer,
-# so that it can be deleted when the last object stops using it.
-# Same for Shader class.
-# todo: support for 3D texture (need extension)
-# todo: support Cubemap
-
-
-class FrameBufferError(RuntimeError):
-    """ Raised when something goes wrong that depens on state that was set 
-    earlier (due to deferred loading).
-    """
-    pass
-
+# ------------------------------------------------------ RenderBuffer class ---
 
 
 class RenderBuffer(GLObject):
-    """ Representation of a render buffer, to be attached to a
-    FrameBuffer object.
+    """ Base class for render buffer object
+    
+    A render buffer can be in color, depth or stencil format. If this
+    format is not specified, it is set when attached to the FrameBuffer.
+    
+    Parameters
+    ----------
+    shape : tuple
+        The shape of the render buffer.
+    format : {None, 'color', 'depth', 'stencil'}
+        The format of the render buffer. See resize.
+    resizeable : bool
+        Indicates whether texture can be resized
     """
     
-    _COLOR_FORMATS = (gl.GL_RGB565, gl.GL_RGBA4, gl.GL_RGB5_A1,
-                      gl.ext.GL_RGB8, gl.ext.GL_RGBA8)
-    _DEPTH_FORMATS = (gl.GL_DEPTH_COMPONENT16, 
-                      gl.ext.GL_DEPTH_COMPONENT24, gl.ext.GL_DEPTH_COMPONENT32)
-    _STENCIL_FORMATS = (gl.GL_STENCIL_INDEX8, 
-                        gl.ext.GL_STENCIL_INDEX1, gl.ext.GL_STENCIL_INDEX4)
+    _GLIR_TYPE = 'RenderBuffer'
     
-    _FORMATS = (_COLOR_FORMATS + _DEPTH_FORMATS + _STENCIL_FORMATS +
-                (gl.ext.GL_DEPTH24_STENCIL8,) )
-    
-    
-    def __init__(self, shape=None, format=None):
+    def __init__(self, shape=None, format=None, resizeable=True):
         GLObject.__init__(self)
-        
-        # Parameters
-        self._shape = None
         self._format = None
-        
-        # Set storage now?
-        if shape is not None:
-            self.set_shape(shape, format=format)
+        self._resizeable = True
+        self.resize(shape, format)
+        self._resizeable = bool(resizeable)
     
+    @property
+    def shape(self):
+        """RenderBuffer shape """
+        return self._shape
     
-    def set_shape(self, shape, format=None):
-        """ Allocate storage for this render buffer.
-        
-        This function can be repeatedly called without much cost if
-        the shape is not changed.
-        
-        In general, it's easier to just call FrameBuffer.set_size()
-        to allocate space for all attachements.
-        
+    @property
+    def format(self):
+        """ RenderBuffer format """
+
+        return self._format
+
+    def resize(self, shape, format=None):
+        """ Set the render-buffer size and format
+
         Parameters
         ----------
-        shape : tuple
-            The shape of the "virtual" data. Note that shape[0] is height.
-        format : str
-            The format representation of the data. If not given or None,
-            it is determined automatically depending on the shape and
-            the kind of atatchment. Can be RGB565, RGBA4, RGB5_A1, RGB8, 
-            RGBA8, DEPTH_COMPONENT16, DEPTH_COMPONENT24, DEPTH_COMPONENT32,
-            STENCIL_INDEX8, STENCIL_INDEX1, STENCIL_INDEX4. The OpenGL enum 
-            can also be given.
-        
+        shape : tuple of integers
+            New shape in yx order. A render buffer is always 2D. For
+            symmetry with the texture class, a 3-element tuple can also
+            be given, in which case the last dimension is ignored.
+        format : {None, 'color', 'depth', 'stencil'}
+            The buffer format. If None, the current format is maintained. 
+            If that is also None, the format will be set upon attaching
+            it to a framebuffer. One can also specify the explicit enum:
+            GL_RGB565, GL_RGBA4, GL_RGB5_A1, GL_DEPTH_COMPONENT16, or
+            GL_STENCIL_INDEX8
         """
-        # Set ndim
-        ndim = 2
         
-        # Convert format
-        format = convert_to_enum(format, True)
-        
+        if not self._resizeable:
+            raise RuntimeError("RenderBuffer is not resizeable")
         # Check shape
-        if not isinstance(shape, tuple):
-            raise ValueError("Shape must be a tuple.")
-        if not ( (len(shape) == ndim) or 
-                  len(shape) == ndim+1 and shape[-1] <= 4 ):
-            raise ValueError("Shape has invalid dimensions.")
-        shape = tuple([int(i) for i in shape])
-        if not all([i>0 for i in shape]):
-            raise ValueError("Cannot have negative shape.")
-        
-        # Is this already my shape?
-        if format is None or format is self._format:
-            if self._shape is not None:
-                if self._shape[:ndim] == shape[:ndim]:
-                    return
-        
+        if not (isinstance(shape, tuple) and len(shape) in (2, 3)):
+            raise ValueError('RenderBuffer shape must be a 2/3 element tuple')
         # Check format
         if format is None:
-            # Set later by FBO. 
-            # Note here, because default differs per color/depth/stencil
-            pass  
-        elif format not in self._FORMATS:
-            raise ValueError('Given format not supported for RenderBuffer storage.')
+            format = self._format  # Use current format (may be None)
+        elif isinstance(format, int):
+            pass  # Do not check, maybe user needs desktop GL formats
+        elif isinstance(format, string_types):
+            if format not in ('color', 'depth', 'stencil'):
+                raise ValueError('RenderBuffer format must be "color", "depth"'
+                                 ' or "stencil", not %r' % format)
+        else:
+            raise ValueError('Invalid RenderBuffer format: %r' % format)
         
-        # Set pending data
-        self._shape = shape
-        self._format = format or self._format
-        self._need_update = True
-    
-    
-    def _create(self):
-        self._handle = gl.glGenRenderbuffers(1)
-    
-    
-    def _delete(self):
-       gl.glDeleteRenderbuffers([self._handle])
-    
-    
-    def _activate(self):
-        gl.glBindRenderbuffer(gl.GL_RENDERBUFFER, self._handle)
-    
-    
-    def _deactivate(self):
-        gl.glBindRenderbuffer(gl.GL_RENDERBUFFER, 0)
-    
-    
-    def _update(self):
-        
-        # Enable now
-        gl.glBindRenderbuffer(gl.GL_RENDERBUFFER, self._handle)
-        
-        # Get data
-        shape, format =  self._shape, self._format
-        if shape is None or format is None:
-            return
-        # Check size
-        MAX = gl.glGetIntegerv(gl.GL_MAX_RENDERBUFFER_SIZE)
-        if shape[0] > MAX or shape[1] > MAX:
-            raise FrameBufferError('Cannot create a render buffer of %ix%i (max is %i).' % (shape[1], shape[0], MAX))
-        # Set 
-        gl.glRenderbufferStorage(gl.GL_RENDERBUFFER, format, shape[1], shape[0])
-    
+        # Store and send GLIR command
+        self._shape = tuple(shape[:2])
+        self._format = format
+        if self._format is not None:
+            self._glir.command('SIZE', self._id, self._shape, self._format)
 
 
-
+# ------------------------------------------------------- FrameBuffer class ---
 class FrameBuffer(GLObject):
-    """ Representation of a frame buffer object (a.k.a. FBO).
-    FrameBuffers allow off-screen rendering instead of to the screen.
-    This is for instance used for special effects and post-processing.
+    """ Frame buffer object
+    
+    Parameters
+    ----------
+    
+    color : RenderBuffer (optional)
+        The color buffer to attach to this frame buffer
+    depth : RenderBuffer (optional)
+        The depth buffer to attach to this frame buffer
+    stencil : RenderBuffer (optional)
+        The stencil buffer to attach to this frame buffer
     """
+    
+    _GLIR_TYPE = 'FrameBuffer'
     
     def __init__(self, color=None, depth=None, stencil=None):
         GLObject.__init__(self)
-        
-        # Init pending attachments
-        self._pending_attachments = []
-        self._attachment_color = None
-        self._attachment_depth = None
-        self._attachment_stencil = None
-        
-        # Set given attachments
+        # Init buffers
+        self._color_buffer = None
+        self._depth_buffer = None
+        self._stencil_buffer = None
         if color is not None:
-            self.attach_color(color)
-        elif depth is not None:
-            self.attach_depth(depth)
-        elif stencil is not None:
-            self.attach_stencil(stencil)
+            self.color_buffer = color
+        if depth is not None:
+            self.depth_buffer = depth
+        if stencil is not None:
+            self.stencil_buffer = stencil
     
-    
-    @property
-    def color_attachment(self):
-        """ Get the color attachement.
+    def activate(self):
+        """ Activate/use this frame buffer.
         """
-        return self._attachment_color
+        # Send command
+        self._glir.command('FRAMEBUFFER', self._id, True)
+        # Associate canvas now
+        canvas = get_current_canvas()
+        if canvas is not None:
+            canvas.context.glir.associate(self.glir)
     
-    
-    @property
-    def depth_attachment(self):
-        """ Get the depth attachement.
+    def deactivate(self):
+        """ Stop using this frame buffer, the previous framebuffer will be
+        made active.
         """
-        return self._attachment_depth
+        self._glir.command('FRAMEBUFFER', self._id, False)
     
-    
-    @property
-    def stencil_attachment(self):
-        """ Get the stencil attachement.
-        """
-        return self._attachment_stencil
-    
-    
-    def attach_color(self, object, level=0):
-        """ Attach a RenderBuffer of Texture instance to collect
-        color output for this FrameBuffer. Pass None for object
-        to detach the attachment. If a texture is given,
-        level specifies the mipmap level (default 0).
-        """
-        attachment = gl.GL_COLOR_ATTACHMENT0
-        if not isinstance(level, int):
-            raise ValueError("Level must be an int")
-        
-        if object is None or object == 0:
-            # Detach
-            self._attachment_color = None
-            self._pending_attachments.append( (attachment, 0, None) )
-        elif isinstance(object, RenderBuffer):
-            # Render buffer
-            self._attachment_color = object
-            object._format = object._format or gl.GL_RGB565  # GL_RGB565 or GL_RGBA4
-            self._pending_attachments.append( (attachment, object, None) )
-        elif isinstance(object, Texture2D):
-            # Texture
-            self._attachment_color = object
-            self._pending_attachments.append( (attachment, object, level) )
-        else:
-            raise ValueError('Can only attach a RenderBuffer of Texture to a FrameBuffer.')
-        self._need_update = True
-    
-    
-    def attach_depth(self, object, level=0):
-        """ Attach a RenderBuffer of Texture instance to collect
-        depth output for this FrameBuffer. Pass None for object
-        to detach the attachment. If a texture is given,
-        level specifies the mipmap level (default 0).
-        """
-        attachment = gl.GL_DEPTH_ATTACHMENT
-        if not isinstance(level, int):
-            raise ValueError("Level must be an int")
-        
-        if object is None or object == 0:
-            # Detach
-            self._attachment_depth = None
-            self._pending_attachments.append( (attachment, 0, None) )
-        elif isinstance(object, RenderBuffer):
-            # Render buffer
-            object._format = object._format or gl.GL_DEPTH_COMPONENT16
-            self._attachment_depth = object
-            self._pending_attachments.append( (attachment, object, None) )
-        elif isinstance(object, Texture2D):
-            # Texture
-            self._attachment_depth = object
-            self._attachment_depth = object
-            self._pending_attachments.append( (attachment, object, level) )
-        else:
-            raise ValueError('Can only attach a RenderBuffer or Texture to a FrameBuffer.')
-        self._need_update = True
-    
-    
-    def attach_stencil(self, object):
-        """ Attach a RenderBuffer instance to collect stencil output for
-        this FrameBuffer. Pass None for object to detach the
-        attachment.
-        """
-        attachment = gl.GL_STENCIL_ATTACHMENT
-        if object is None or object == 0:
-            # Detach
-            self._attachment_stencil = None
-            self._pending_attachments.append( (attachment, 0, None) )
-        elif isinstance(object, RenderBuffer):
-            object._format = object._format or gl.GL_STENCIL_INDEX8
-            # Detach
-            self._attachment_stencil = object
-            self._pending_attachments.append( (attachment, object, None) )
-        else:
-            raise ValueError('For stencil data, can only attach a RenderBuffer to a FrameBuffer.')
-        self._need_update = True
-    
-    
-    def set_size(self, width, height):
-        """ Convenience function to set the space allocated for all
-        attachments in use.
-        """
-        shape = height, width, 3
-        for attachment in ( self._attachment_color, 
-                            self._attachment_depth,
-                            self._attachment_stencil):
-            if isinstance(attachment, Texture2D):
-                attachment.set_shape(shape)
-            elif isinstance(attachment, RenderBuffer):
-                attachment.set_shape(shape)
-    
-    
-    def _create(self):
-        self._handle = gl.glGenFramebuffers(1)
-    
-    
-    def _delete(self):
-       gl.glDeleteFramebuffers([self._handle])
-    
-    
-    def _activate(self):
-        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._handle)
-    
-    
-    def _deactivate(self):
-        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
-    
-    
-    def _update(self):
-        
-        # We need to activate before we can add attachements
-        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._handle)
-        
-        # Attach any RenderBuffers or Textures
-        # Note that we only enable the object briefly to attach it.
-        # After that, the object does not need to be bound.
-        while self._pending_attachments:
-            attachment, object, level = self._pending_attachments.pop(0)
-            if object == 0:
-                gl.glFramebufferRenderbuffer(gl.GL_FRAMEBUFFER, attachment,
-                                            gl.GL_RENDERBUFFER, 0)
-            elif isinstance(object, RenderBuffer):
-                with object:
-                    gl.glFramebufferRenderbuffer(gl.GL_FRAMEBUFFER, attachment,
-                                            gl.GL_RENDERBUFFER, object.handle)
-            elif isinstance(object, Texture2D):
-                # note that we use private variable _target from Texture
-                with object:
-                    gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, attachment,
-                                    object._target, object.handle, level)
-            else:
-                raise FrameBufferError('Invalid attachment. This should not happen.')
-        
-        # Check
-        if True:
-            res = gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER)
-            if res == gl.GL_FRAMEBUFFER_COMPLETE:
-                pass
-            elif res == 0:
-                raise FrameBufferError('Target not equal to GL_FRAMEBUFFER')
-            elif res == gl.GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT:
-                raise FrameBufferError('FrameBuffer attachments are incomplete.')
-            elif res == gl.GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT:
-                raise FrameBufferError('No valid attachments in the FrameBuffer.')
-            elif res == gl.GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS:
-                raise FrameBufferError('attachments do not have the same width and height.')   
-            #elif res == gl.GL_FRAMEBUFFER_INCOMPLETE_FORMATS:  # Not in our namespace?
-            #    raise FrameBufferError('Internal format of attachment is not renderable.')
-            elif res == gl.GL_FRAMEBUFFER_UNSUPPORTED:
-                raise FrameBufferError('Combination of internal formats used by attachments is not supported.')
-    
+    def __enter__(self):
+        self.activate()
+        return self
 
+    def __exit__(self, t, val, trace):
+        self.deactivate()
+    
+    def _set_buffer(self, buffer, format):
+        formats = ('color', 'depth', 'stencil')
+        assert format in formats
+        # Auto-format or check render buffer
+        if isinstance(buffer, RenderBuffer):
+            if buffer.format is None:
+                buffer.resize(buffer.shape, format)
+            elif buffer.format in formats and buffer.format != format:
+                raise ValueError('Cannot attach a %s buffer as %s buffer.' % 
+                                 (buffer.format, format)) 
+        # Attach
+        if buffer is None:
+            setattr(self, '_%s_buffer' % format, None)
+            self._glir.command('ATTACH', self._id, format, 0)
+        elif isinstance(buffer, (Texture2D, RenderBuffer)):
+            self.glir.associate(buffer.glir)
+            setattr(self, '_%s_buffer' % format, buffer)
+            self._glir.command('ATTACH', self._id, format, buffer.id)
+        else:
+            raise TypeError("Buffer must be a RenderBuffer, Texture2D or None."
+                            " (got %s)" % type(buffer))
+    
+    @property
+    def color_buffer(self):
+        """Color buffer attachment"""
+        return self._color_buffer
+
+    @color_buffer.setter
+    def color_buffer(self, buffer):
+        self._set_buffer(buffer, 'color')
+
+    @property
+    def depth_buffer(self):
+        """Depth buffer attachment"""
+        return self._depth_buffer
+
+    @depth_buffer.setter
+    def depth_buffer(self, buffer):
+        self._set_buffer(buffer, 'depth')
+
+    @property
+    def stencil_buffer(self):
+        """Stencil buffer attachment"""
+        return self._stencil_buffer
+
+    @stencil_buffer.setter
+    def stencil_buffer(self, buffer):
+        self._set_buffer(buffer, 'stencil')
+
+    @property
+    def shape(self):
+        """ The shape of the Texture/RenderBuffer attached to this FrameBuffer
+        """
+        if self.color_buffer is not None:
+            return self.color_buffer.shape[:2]  # in case its a texture
+        if self.depth_buffer is not None:
+            return self.depth_buffer.shape[:2]
+        if self.stencil_buffer is not None:
+            return self.stencil_buffer.shape[:2]
+        raise RuntimeError('FrameBuffer without buffers has undefined shape')
+    
+    def resize(self, shape):
+        """ Resize all attached buffers with the given shape
+
+        Parameters
+        ----------
+        shape : tuple of two integers
+            New buffer shape (h, w), to be applied to all currently
+            attached buffers. For buffers that are a texture, the number
+            of color channels is preserved.
+        """
+        # Check
+        if not (isinstance(shape, tuple) and len(shape) == 2):
+            raise ValueError('RenderBuffer shape must be a 2-element tuple')
+        # Resize our buffers
+        for buf in (self.color_buffer, self.depth_buffer, self.stencil_buffer):
+            if buf is None:
+                continue
+            shape_ = shape
+            if isinstance(buf, Texture2D):
+                shape_ = shape + (self.color_buffer.shape[-1], )
+            buf.resize(shape_, buf.format)
+    
+    def read(self, mode='color', alpha=True):
+        """ Return array of pixel values in an attached buffer
+        
+        Parameters
+        ----------
+        mode : str
+            The buffer type to read. May be 'color', 'depth', or 'stencil'.
+        alpha : bool
+            If True, returns RGBA array. Otherwise, returns RGB.
+        
+        Returns
+        -------
+        buffer : array
+            3D array of pixels in np.uint8 format. 
+            The array shape is (h, w, 3) or (h, w, 4), with the top-left 
+            corner of the framebuffer at index [0, 0] in the returned array.
+        
+        """
+        _check_valid('mode', mode, ['color', 'depth', 'stencil'])
+        buffer = getattr(self, mode+'_buffer')
+        h, w = buffer.shape[:2]
+        
+        # todo: this is ostensibly required, but not available in gloo.gl
+        #gl.glReadBuffer(buffer._target)
+        
+        return read_pixels((0, 0, w, h), alpha=alpha)

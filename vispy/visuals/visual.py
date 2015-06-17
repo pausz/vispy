@@ -1,149 +1,194 @@
-import OpenGL.GL as gl
-import vispy.shaders.transforms as transforms
-from vispy.util.six import string_types
-import numpy as np
-    
+# -*- coding: utf-8 -*-
+# Copyright (c) 2015, Vispy Development Team.
+# Distributed under the (new) BSD License. See LICENSE.txt for more info.
+
+from __future__ import division
+
+from ..util.event import EmitterGroup, Event
+from .shaders import StatementList
+from .. import gloo
 
 """
-Names assigned to commonly-used combinations of GL flags
+API Issues to work out:
+
+  * Need Visual.bounds() as described here:
+    https://github.com/vispy/vispy/issues/141
+
 """
-GLOptions = {
-    'opaque': {
-        gl.GL_DEPTH_TEST: True,
-        gl.GL_BLEND: False,
-        gl.GL_ALPHA_TEST: False,
-        gl.GL_CULL_FACE: False,
-    },
-    'translucent': {
-        gl.GL_DEPTH_TEST: True,
-        gl.GL_BLEND: True,
-        gl.GL_ALPHA_TEST: False,
-        gl.GL_CULL_FACE: False,
-        'glBlendFunc': (gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA),
-    },
-    'additive': {
-        gl.GL_DEPTH_TEST: False,
-        gl.GL_BLEND: True,
-        gl.GL_ALPHA_TEST: False,
-        gl.GL_CULL_FACE: False,
-        'glBlendFunc': (gl.GL_SRC_ALPHA, gl.GL_ONE),
-    },
-}
 
 
 class Visual(object):
     """
-    Base class for low-level visuals. 
-    
-    Provides:
-    
-    * Methods for establishing GL state before drawing
-      (ie, glEnable/Disable and related calls)
-    * Methods for determining coordinate transformations to be applied to vertex data
-    
+    Abstract class representing a drawable object.
+
+    At a minimum, Visual subclasses should extend the draw() method.
+
+    Events:
+
+        update : Event
+            Emitted when the visual has changed and needs to be redrawn.
+        bounds_change : Event
+            Emitted when the bounds of the visual have changed.
+
+    Notes
+    -----
+    When used in the scenegraph, all Visual classes are mixed with
+    `vispy.scene.Node` in order to implement the methods, attributes and
+    capabilities required for their usage within it.
     """
+
     def __init__(self):
-        self.__transforms = []
-        self.__gl_opts = {}
-        
-    @property
-    def transforms(self):
-        return self.__transforms[:]
-    
-    @transforms.setter
-    def transforms(self, tr):
-        assert isinstance(tr, list)
-        self.__transforms = tr
-        self.update()
-        
-    def transform_chain(self):
-        return transforms.TransformChain(self.transforms, function='global_transform')
-        
-    def draw(self):
-        """ Draw this item.
-        """
-        # do glEnable/Disable and related calls
-        self.setup_gl_state() 
-        
-        # draw here..
-    
-    def init_gl(self):
-        pass
-    
-    @classmethod
-    def draw_multi(self, visuals):
-        """
-        Draw multiple visuals in a single pass.
-        
-        Requires items in *visuals* to be compatible.
-        Subclasses are not required to reimplement this method.
-        """
-        pass
+        self._visible = True
+        self.events = EmitterGroup(source=self,
+                                   auto_connect=True,
+                                   update=Event,
+                                   bounds_change=Event
+                                   )
+        self._gl_state = {'preset': None}
+        self._filters = set()
+        self._hooks = {}
 
-    def set_gl_options(self, opts):
+    def set_gl_state(self, preset=None, **kwargs):
+        """Define the set of GL state parameters to use when drawing
+
+        Parameters
+        ----------
+        preset : str
+            Preset to use.
+        **kwargs : dict
+            Keyword argments to use.
         """
-        Set the OpenGL state options to use immediately before drawing this item.
-        (Note that subclasses must call setup_gl_state before painting for this to work)
+        self._gl_state = kwargs
+        self._gl_state['preset'] = preset
+
+    def update_gl_state(self, *args, **kwargs):
+        """Modify the set of GL state parameters to use when drawing
+
+        Parameters
+        ----------
+        *args : tuple
+            Arguments.
+        **kwargs : dict
+            Keyword argments.
+        """
+        if len(args) == 1:
+            self._gl_state['preset'] = args[0]
+        elif len(args) != 0:
+            raise TypeError("Only one positional argument allowed.")
+        self._gl_state.update(kwargs)
+
+    def _update(self):
+        """
+        This method is called internally whenever the Visual needs to be 
+        redrawn. By default, it emits the update event.
+        """
+        self.events.update()
+
+    def draw(self, transforms):
+        """Draw this visual now.
+
+        The default implementation calls gloo.set_state().
         
-        The simplest way to invoke this method is to pass in the name of
-        a predefined set of options (see the GLOptions variable):
+        This function is called automatically when the visual needs to be drawn
+        as part of a scenegraph, or when calling 
+        ``SceneCanvas.draw_visual(...)``. It is uncommon to call this method 
+        manually.
         
-        ============= ======================================================
-        opaque        Enables depth testing and disables blending
-        translucent   Enables depth testing and blending
-                      Elements must be drawn sorted back-to-front for
-                      translucency to work correctly.
-        additive      Disables depth testing, enables blending.
-                      Colors are added together, so sorting is not required.
-        ============= ======================================================
+        The *transforms* argument is a TransformSystem instance that provides 
+        access to transforms that the visual
+        may use to determine its relationship to the document coordinate
+        system (which provides physical measurements) and the framebuffer
+        coordinate system (which is necessary for antialiasing calculations). 
         
-        It is also possible to specify any arbitrary settings as a dictionary. 
-        This may consist of {'functionName': (args...)} pairs where functionName must 
-        be a callable attribute of OpenGL.GL, or {GL_STATE_VAR: bool} pairs 
-        which will be interpreted as calls to glEnable or glDisable(GL_STATE_VAR).
+        Vertex transformation can be done either on the CPU using 
+        Transform.map(), or on the GPU using the GLSL functions generated by 
+        Transform.shader_map().
+
+        Parameters
+        ----------
+        transforms : instance of TransformSystem
+            The transforms to use.
+        """
+        gloo.set_state(**self._gl_state)
+
+    def bounds(self, mode, axis):
+        """ Return the (min, max) bounding values describing the location of
+        this node in its local coordinate system.
+
+        Parameters
+        ----------
+        mode : str
+            Describes the type of boundary requested. Can be "visual", "data",
+            or "mouse".
+        axis : 0, 1, 2
+            The axis along which to measure the bounding values, in
+            x-y-z order.
         
-        For example::
-            
-            {
-                GL_ALPHA_TEST: True,
-                GL_CULL_FACE: False,
-                'glBlendFunc': (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA),
-            }
-            
+        Returns
+        -------
+        None or (min, max) tuple. 
+        
+        Notes
+        -----
+        This is used primarily to allow automatic ViewBox zoom/pan.
+        By default, this method returns None which indicates the object should 
+        be ignored for automatic zooming along *axis*.
+        
+        A scenegraph may also use this information to cull visuals from the
+        display list.
         
         """
-        if isinstance(opts, string_types):
-            opts = GLOptions[opts]
-        self.__gl_opts = opts.copy()
-        self.update()
-        
+        return None
+
     def update(self):
-        """ Called when the Visual needs to be redrawn
         """
-        
-    def update_gl_options(self, opts):
+        Emit an event to inform listeners that this Visual needs to be redrawn.
         """
-        Modify the OpenGL state options to use immediately before drawing this item.
-        *opts* must be a dictionary as specified by setGLOptions.
-        Values may also be None, in which case the key will be ignored.
-        """
-        self.__gl_opts.update(opts)
-        
-    def setup_gl_state(self):
-        """
-        This method is responsible for preparing the GL state options needed to render 
-        this item (blending, depth testing, etc). The method is called immediately before painting the item.
-        """
-        for k,v in self.__gl_opts.items():
-            if v is None:
-                continue
-            if isinstance(k, string_types):
-                func = getattr(gl, k)
-                func(*v)
-            else:
-                if v is True:
-                    gl.glEnable(k)
-                else:
-                    gl.glDisable(k)
+        self.events.update()
 
+    def _get_hook(self, shader, name):
+        """Return a FunctionChain that Filters may use to modify the program.
 
+        *shader* should be "frag" or "vert"
+        *name* should be "pre" or "post"
+        """
+        assert name in ('pre', 'post')
+        key = (shader, name)
+        if key in self._hooks:
+            return self._hooks[key]
+
+        prog = getattr(self, '_program', None)
+        if prog is None:
+            raise NotImplementedError("%s shader does not implement hook '%s'"
+                                      % key)
+        hook = StatementList()
+        if shader == 'vert':
+            prog.vert[name] = hook
+        elif shader == 'frag':
+            prog.frag[name] = hook
+        self._hooks[key] = hook
+        return hook
+
+    def attach(self, filt):
+        """Attach a Filter to this visual
+
+        Each filter modifies the appearance or behavior of the visual.
+
+        Parameters
+        ----------
+        filt : object
+            The filter to attach.
+        """
+        filt._attach(self)
+        self._filters.add(filt)
+
+    def detach(self, filt):
+        """Detach a filter
+
+        Parameters
+        ----------
+        filt : object
+            The filter to detach.
+        """
+        self._filters.remove(filt)
+        filt._detach(self)

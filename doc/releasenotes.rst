@@ -2,6 +2,29 @@
 Release notes
 =============
 
+**Vispy 0.4**
+
+There have been many changes, which include:
+
+  * minor tweaks and bugfixes to gloo
+  * experimental support for "collections" (batched GL draw calls)
+  * many new Visuals (Volume, Isocurve, etc.)
+  * improvements and extensions of the SceneGraph system
+  * proper HiDPI support
+  * an experimental native high-level plotting interface vispy.plot
+
+
+**Vispy 0.3**
+
+Many changes:
+  * Added multiple new application backends, including a IPython browser
+    backend.
+  * Experimental support for high-level visualizations through
+    '`vispy.scene`` and ``vispy.scene.visuals``.
+  * Experimental support for matplotlib plotting through ``vispy.mpl_plot``.
+  * Loads of bugfixes.
+
+
 **Vispy 0.2.1**
 
 Small fix in the setup script. The buf prevented pip from working.
